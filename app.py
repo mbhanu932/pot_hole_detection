@@ -20,9 +20,10 @@ st.set_page_config(
 )
 
 st.title("🚧 Pothole Detection & Tracking")
+
 st.write(
-    "Detect and track potholes in road images and videos "
-    "using a fine-tuned YOLO model."
+    "Detect, track, and count potholes throughout an entire "
+    "road video using a fine-tuned YOLO model."
 )
 
 
@@ -42,33 +43,30 @@ else:
 # SIDEBAR
 # ============================================================
 
-st.sidebar.header("⚙️ Model Controls")
+st.sidebar.header("⚙️ Detection Settings")
 
 confidence_threshold = st.sidebar.slider(
     "Detection Confidence",
-    min_value=0.05,
-    max_value=1.0,
-    value=0.25,
+    min_value=0.10,
+    max_value=0.90,
+    value=0.40,
     step=0.05
 )
 
 iou_threshold = st.sidebar.slider(
     "IoU Threshold",
-    min_value=0.1,
-    max_value=0.9,
+    min_value=0.20,
+    max_value=0.90,
     value=0.45,
     step=0.05
 )
 
-enable_tta = st.sidebar.checkbox(
-    "Enable TTA for Images",
-    value=False
+video_imgsz = st.sidebar.selectbox(
+    "Video Inference Size",
+    options=[320, 416, 512, 640],
+    index=2
 )
 
-
-# ============================================================
-# VIDEO SETTINGS
-# ============================================================
 
 st.sidebar.header("🎥 Video Settings")
 
@@ -83,12 +81,6 @@ frame_skip = st.selectbox(
     )
 )
 
-video_imgsz = st.selectbox(
-    "Video Inference Size",
-    options=[320, 416, 512, 640],
-    index=2
-)
-
 max_video_width = st.selectbox(
     "Maximum Video Width",
     options=[640, 800, 960, 1280],
@@ -96,20 +88,13 @@ max_video_width = st.selectbox(
 )
 
 
-# ============================================================
-# HARDWARE
-# ============================================================
-
 st.sidebar.header("💻 Hardware")
 
 if torch.cuda.is_available():
-
     st.sidebar.success(
         f"🚀 GPU: {DEVICE_NAME}"
     )
-
 else:
-
     st.sidebar.info(
         "💻 CUDA GPU not detected. Using CPU."
     )
@@ -122,15 +107,14 @@ else:
 @st.cache_resource
 def load_pothole_model():
 
-    # First look for best.pt beside app.py
+    # First check best.pt in project root
     root_model = "best.pt"
 
     if os.path.exists(root_model):
+        model = YOLO(root_model)
+        return model, root_model
 
-        return YOLO(root_model), root_model
-
-
-    # If not found, search inside runs/
+    # Otherwise search inside runs folder
     found_weights = glob.glob(
         "runs/**/best.pt",
         recursive=True
@@ -145,8 +129,9 @@ def load_pothole_model():
 
         model_path = found_weights[0]
 
-        return YOLO(model_path), model_path
+        model = YOLO(model_path)
 
+        return model, model_path
 
     raise FileNotFoundError(
         "best.pt was not found. "
@@ -177,25 +162,20 @@ except Exception as e:
     )
 
     st.info(
-        "Make sure your valid best.pt file is "
-        "in the project folder."
+        "Make sure a valid best.pt file is present."
     )
 
     st.stop()
 
 
 # ============================================================
-# MODEL CLASSES
+# CHECK MODEL CLASSES
 # ============================================================
 
 st.sidebar.subheader("🔍 Model Classes")
 
 st.sidebar.write(model.names)
 
-
-# ============================================================
-# FIND POTHOLE CLASS
-# ============================================================
 
 pothole_class_ids = []
 
@@ -211,7 +191,7 @@ for class_id, class_name in model.names.items():
 if not pothole_class_ids:
 
     st.sidebar.error(
-        "❌ Pothole class not found!"
+        "❌ Pothole class was not found."
     )
 
     st.error(
@@ -238,13 +218,12 @@ mode = st.radio(
 
 
 # ============================================================
-# IMAGE DETECTION
+# IMAGE MODE
 # ============================================================
 
 if mode == "Image":
 
     st.header("🖼️ Pothole Detection")
-
 
     uploaded_file = st.file_uploader(
         "Upload a road image",
@@ -254,7 +233,6 @@ if mode == "Image":
             "png"
         ]
     )
-
 
     if uploaded_file is not None:
 
@@ -291,31 +269,19 @@ if mode == "Image":
         ):
 
             results = model.predict(
-
                 source=image,
-
                 conf=confidence_threshold,
-
                 iou=iou_threshold,
-
                 imgsz=640,
-
-                augment=enable_tta,
-
                 device=DEVICE,
-
                 verbose=False
             )
 
 
         result = results[0]
 
-
-        # ----------------------------------------------------
-        # FILTER POTHOLES
-        # ----------------------------------------------------
-
         pothole_count = 0
+
 
         if result.boxes is not None:
 
@@ -330,12 +296,12 @@ if mode == "Image":
                     pothole_count += 1
 
 
-        # ----------------------------------------------------
-        # DISPLAY RESULT
-        # ----------------------------------------------------
-
         annotated_image = result.plot()
 
+
+        # ----------------------------------------------------
+        # RESULT
+        # ----------------------------------------------------
 
         with col2:
 
@@ -378,55 +344,19 @@ if mode == "Image":
                 )
 
 
-        # ----------------------------------------------------
-        # DETAILS
-        # ----------------------------------------------------
-
-        if pothole_count > 0:
-
-            st.subheader(
-                "🔎 Detection Details"
-            )
-
-
-            detection_number = 0
-
-
-            for box in result.boxes:
-
-                class_id = int(
-                    box.cls[0].item()
-                )
-
-
-                if class_id not in pothole_class_ids:
-
-                    continue
-
-
-                detection_number += 1
-
-
-                confidence = float(
-                    box.conf[0].item()
-                )
-
-
-                st.write(
-                    f"**Pothole {detection_number}** "
-                    f"— Confidence: "
-                    f"{confidence:.2%}"
-                )
-
-
 # ============================================================
-# VIDEO DETECTION + TRACKING
+# VIDEO MODE
 # ============================================================
 
 else:
 
     st.header(
-        "🎥 Pothole Detection & Tracking"
+        "🎥 Full Video Pothole Detection & Tracking"
+    )
+
+    st.write(
+        "The complete video will be processed frame by frame. "
+        "Confirmed tracking identities are counted only once."
     )
 
 
@@ -449,9 +379,9 @@ else:
 
         try:
 
-            # ==================================================
+            # =================================================
             # SAVE INPUT VIDEO
-            # ==================================================
+            # =================================================
 
             with tempfile.NamedTemporaryFile(
                 delete=False,
@@ -467,9 +397,9 @@ else:
                 )
 
 
-            # ==================================================
+            # =================================================
             # OPEN VIDEO
-            # ==================================================
+            # =================================================
 
             cap = cv2.VideoCapture(
                 input_video_path
@@ -485,16 +415,15 @@ else:
                 st.stop()
 
 
-            # ==================================================
+            # =================================================
             # VIDEO INFORMATION
-            # ==================================================
+            # =================================================
 
             total_frames = int(
                 cap.get(
                     cv2.CAP_PROP_FRAME_COUNT
                 )
             )
-
 
             original_fps = cap.get(
                 cv2.CAP_PROP_FPS
@@ -511,7 +440,6 @@ else:
                     cv2.CAP_PROP_FRAME_WIDTH
                 )
             )
-
 
             original_height = int(
                 cap.get(
@@ -532,9 +460,9 @@ else:
                 video_duration = 0
 
 
-            # ==================================================
-            # DISPLAY VIDEO INFORMATION
-            # ==================================================
+            # =================================================
+            # VIDEO INFORMATION DISPLAY
+            # =================================================
 
             info1, info2, info3, info4 = (
                 st.columns(4)
@@ -560,7 +488,7 @@ else:
 
 
             info4.metric(
-                "Frames",
+                "Total Frames",
                 total_frames
             )
 
@@ -568,38 +496,9 @@ else:
             st.divider()
 
 
-            # ==================================================
-            # PROCESSING MESSAGE
-            # ==================================================
-
-            st.subheader(
-                "🚀 Processing Complete Video"
-            )
-
-
-            st.write(
-                f"Running on: **{DEVICE_NAME}**"
-            )
-
-
-            if frame_skip == 1:
-
-                st.info(
-                    "Every video frame will be processed "
-                    "for smoother tracking."
-                )
-
-            else:
-
-                st.warning(
-                    f"Every {frame_skip}th frame is being "
-                    f"processed."
-                )
-
-
-            # ==================================================
-            # OUTPUT VIDEO SIZE
-            # ==================================================
+            # =================================================
+            # VIDEO SIZE
+            # =================================================
 
             if original_width > max_video_width:
 
@@ -622,14 +521,19 @@ else:
                 output_height = original_height
 
 
-            # Ensure dimensions are even
-            output_width -= output_width % 2
-            output_height -= output_height % 2
+            # Video dimensions must be even
+            output_width -= (
+                output_width % 2
+            )
+
+            output_height -= (
+                output_height % 2
+            )
 
 
-            # ==================================================
-            # OUTPUT FILE
-            # ==================================================
+            # =================================================
+            # OUTPUT VIDEO
+            # =================================================
 
             output_video_path = (
                 tempfile.NamedTemporaryFile(
@@ -639,23 +543,15 @@ else:
             )
 
 
-            # ==================================================
-            # VIDEO WRITER
-            # ==================================================
-
             fourcc = cv2.VideoWriter_fourcc(
                 *"mp4v"
             )
 
 
             writer = cv2.VideoWriter(
-
                 output_video_path,
-
                 fourcc,
-
                 original_fps,
-
                 (
                     output_width,
                     output_height
@@ -670,19 +566,28 @@ else:
                 )
 
 
-            # ==================================================
+            # =================================================
             # TRACKING VARIABLES
-            # ==================================================
+            # =================================================
 
-            confirmed_track_ids = set()
-
+            # Track ID -> number of frames seen
             track_frame_count = {}
 
-            missed_frames = {}
 
-            MIN_CONFIRM_FRAMES = 3
+            # Track IDs that have been confirmed
+            confirmed_track_ids = set()
 
-            MAX_MISSED_FRAMES = 30
+
+            # Track IDs seen in current frame
+            current_track_ids = set()
+
+
+            # -------------------------------------------------
+            # A track must appear this many times before
+            # it is considered a real pothole track.
+            # -------------------------------------------------
+
+            MIN_CONFIRM_FRAMES = 5
 
 
             frame_number = 0
@@ -694,34 +599,54 @@ else:
             processing_start = time.time()
 
 
-            # ==================================================
-            # PROGRESS UI
-            # ==================================================
+            # =================================================
+            # UI ELEMENTS
+            # =================================================
+
+            st.subheader(
+                "🚀 Processing Entire Video"
+            )
+
+
+            if frame_skip == 1:
+
+                st.info(
+                    "Every frame will be processed."
+                )
+
+            else:
+
+                st.warning(
+                    f"Every {frame_skip}th frame will be processed."
+                )
+
 
             progress_bar = st.progress(
                 0,
-                text="Starting..."
+                text="Starting video processing..."
             )
 
 
             status_text = st.empty()
 
 
-            metric1, metric2, metric3 = (
-                st.columns(3)
+            metric1, metric2, metric3, metric4 = (
+                st.columns(4)
             )
 
 
-            current_metric = metric1.empty()
+            frame_metric = metric1.empty()
 
-            confirmed_metric = metric2.empty()
+            unique_metric = metric2.empty()
 
-            speed_metric = metric3.empty()
+            detection_metric = metric3.empty()
+
+            fps_metric = metric4.empty()
 
 
-            # ==================================================
-            # VIDEO PROCESSING LOOP
-            # ==================================================
+            # =================================================
+            # PROCESS ENTIRE VIDEO
+            # =================================================
 
             while True:
 
@@ -736,46 +661,31 @@ else:
                 frame_number += 1
 
 
-                # ------------------------------------------------
-                # PROCESS EVERY NTH FRAME
-                # ------------------------------------------------
+                # =================================================
+                # PROCESS FRAME
+                # =================================================
 
                 should_process = (
                     frame_number % frame_skip == 0
                 )
 
 
-                # ------------------------------------------------
-                # If frame is skipped, still write it
-                # to maintain original video length.
-                # ------------------------------------------------
-
                 if not should_process:
 
-                    resized_frame = frame
+                    # Resize frame if necessary
+                    if original_width > max_video_width:
 
-
-                    if (
-                        original_width >
-                        max_video_width
-                    ):
-
-                        resized_frame = cv2.resize(
-
+                        frame = cv2.resize(
                             frame,
-
                             (
                                 output_width,
                                 output_height
                             ),
-
                             interpolation=cv2.INTER_AREA
                         )
 
 
-                    writer.write(
-                        resized_frame
-                    )
+                    writer.write(frame)
 
                     continue
 
@@ -783,45 +693,34 @@ else:
                 processed_frames += 1
 
 
-                # ==================================================
+                # =================================================
                 # RESIZE FRAME
-                # ==================================================
+                # =================================================
 
                 if original_width > max_video_width:
 
                     frame = cv2.resize(
-
                         frame,
-
                         (
                             output_width,
                             output_height
                         ),
-
                         interpolation=cv2.INTER_AREA
                     )
 
 
-                # ==================================================
+                # =================================================
                 # YOLO TRACKING
-                # ==================================================
+                # =================================================
 
                 results = model.track(
-
                     source=frame,
-
                     conf=confidence_threshold,
-
                     iou=iou_threshold,
-
                     imgsz=video_imgsz,
-
                     persist=True,
-
                     tracker="botsort.yaml",
-
                     device=DEVICE,
-
                     verbose=False
                 )
 
@@ -829,21 +728,32 @@ else:
                 result = results[0]
 
 
-                # ==================================================
-                # CREATE POTHOLE-ONLY DISPLAY
-                # ==================================================
-
-                annotated_frame = frame.copy()
-
-
-                current_potholes = 0
+                # =================================================
+                # RESET CURRENT FRAME TRACKS
+                # =================================================
 
                 current_track_ids = set()
 
 
+                current_frame_potholes = 0
+
+
+                annotated_frame = frame.copy()
+
+
+                # =================================================
+                # PROCESS DETECTIONS
+                # =================================================
+
                 if result.boxes is not None:
 
-                    for box in result.boxes:
+                    for index, box in enumerate(
+                        result.boxes
+                    ):
+
+                        # -----------------------------------------
+                        # CLASS
+                        # -----------------------------------------
 
                         class_id = int(
                             box.cls[0].item()
@@ -859,12 +769,24 @@ else:
                             continue
 
 
+                        # -----------------------------------------
+                        # CONFIDENCE
+                        # -----------------------------------------
+
                         confidence = float(
                             box.conf[0].item()
                         )
 
 
-                        # Bounding box
+                        current_frame_potholes += 1
+
+                        total_pothole_detections += 1
+
+
+                        # -----------------------------------------
+                        # BOUNDING BOX
+                        # -----------------------------------------
+
                         x1, y1, x2, y2 = (
                             box.xyxy[0]
                             .int()
@@ -873,24 +795,31 @@ else:
                         )
 
 
-                        # Track ID
+                        # -----------------------------------------
+                        # TRACK ID
+                        # -----------------------------------------
+
                         track_id = None
 
 
-                        if (
-                            result.boxes.id
-                            is not None
-                        ):
+                        if result.boxes.id is not None:
 
-                            track_id = int(
-                                box.id[0].item()
-                            )
+                            try:
+
+                                track_id = int(
+                                    result.boxes.id[
+                                        index
+                                    ].item()
+                                )
+
+                            except Exception:
+
+                                track_id = None
 
 
-                        current_potholes += 1
-
-                        total_pothole_detections += 1
-
+                        # =================================================
+                        # TRACK COUNTING
+                        # =================================================
 
                         if track_id is not None:
 
@@ -899,10 +828,7 @@ else:
                             )
 
 
-                            # ----------------------------------
-                            # Track frame count
-                            # ----------------------------------
-
+                            # First time seeing this ID
                             if track_id not in track_frame_count:
 
                                 track_frame_count[
@@ -915,14 +841,9 @@ else:
                             ] += 1
 
 
-                            missed_frames[
-                                track_id
-                            ] = 0
-
-
-                            # ----------------------------------
-                            # Confirm after 3 frames
-                            # ----------------------------------
+                            # ---------------------------------------------
+                            # CONFIRM TRACK
+                            # ---------------------------------------------
 
                             if (
                                 track_frame_count[
@@ -936,195 +857,153 @@ else:
                                 )
 
 
-                        # ==================================================
-                        # DRAW BOUNDING BOX
-                        # ==================================================
+                        # =================================================
+                        # DRAW BOX
+                        # =================================================
 
                         cv2.rectangle(
-
                             annotated_frame,
-
                             (x1, y1),
-
                             (x2, y2),
-
                             (0, 255, 0),
-
                             3
                         )
 
 
-                        # ==================================================
+                        # =================================================
                         # LABEL
-                        # ==================================================
+                        # =================================================
 
                         if track_id is not None:
 
                             label = (
-                                f"Pothole | "
-                                f"ID {track_id} | "
+                                f"Pothole "
+                                f"ID:{track_id} "
                                 f"{confidence:.0%}"
                             )
 
                         else:
 
                             label = (
-                                f"Pothole | "
+                                f"Pothole "
                                 f"{confidence:.0%}"
                             )
 
 
-                        # ==================================================
-                        # LABEL BACKGROUND
-                        # ==================================================
+                        (
+                            text_width,
+                            text_height
+                        ), baseline = cv2.getTextSize(
+                            label,
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            2
+                        )
 
-                        (text_width, text_height), _ = (
-                            cv2.getTextSize(
 
-                                label,
-
-                                cv2.FONT_HERSHEY_SIMPLEX,
-
-                                0.6,
-
-                                2
-                            )
+                        label_y = max(
+                            y1 - 10,
+                            text_height + 10
                         )
 
 
                         cv2.rectangle(
-
                             annotated_frame,
-
                             (
                                 x1,
-                                max(
-                                    0,
-                                    y1 - text_height - 12
-                                )
+                                label_y - text_height - 10
                             ),
-
                             (
                                 x1 + text_width + 10,
-                                y1
+                                label_y + baseline - 5
                             ),
-
                             (0, 255, 0),
-
                             -1
                         )
 
 
                         cv2.putText(
-
                             annotated_frame,
-
                             label,
-
                             (
                                 x1 + 5,
-                                y1 - 6
+                                label_y - 5
                             ),
-
                             cv2.FONT_HERSHEY_SIMPLEX,
-
                             0.6,
-
                             (0, 0, 0),
-
                             2
                         )
 
 
-                # ==================================================
-                # UPDATE MISSED TRACKS
-                # ==================================================
-
-                for track_id in list(
-                    track_frame_count.keys()
-                ):
-
-                    if (
-                        track_id
-                        not in current_track_ids
-                    ):
-
-                        missed_frames[
-                            track_id
-                        ] = (
-                            missed_frames.get(
-                                track_id,
-                                0
-                            ) + 1
-                        )
-
-
-                # ==================================================
+                # =================================================
                 # WRITE PROCESSED FRAME
-                # ==================================================
+                # =================================================
 
                 writer.write(
                     annotated_frame
                 )
 
 
-                # ==================================================
-                # UPDATE UI
-                # ==================================================
-
-                current_metric.metric(
-
-                    "🕳️ Potholes in Frame",
-
-                    current_potholes
-                )
-
-
-                confirmed_metric.metric(
-
-                    "🎯 Confirmed Track IDs",
-
-                    len(confirmed_track_ids)
-                )
-
+                # =================================================
+                # UPDATE METRICS
+                # =================================================
 
                 elapsed = (
-                    time.time() -
-                    processing_start
+                    time.time()
+                    - processing_start
                 )
 
 
                 if elapsed > 0:
 
-                    processing_fps = (
-                        processed_frames /
-                        elapsed
+                    current_fps = (
+                        processed_frames
+                        / elapsed
                     )
 
                 else:
 
-                    processing_fps = 0
+                    current_fps = 0
 
 
-                speed_metric.metric(
-
-                    "⚡ Processing FPS",
-
-                    f"{processing_fps:.1f}"
+                frame_metric.metric(
+                    "🕳️ Potholes in Frame",
+                    current_frame_potholes
                 )
 
 
-                # ==================================================
+                unique_metric.metric(
+                    "🎯 Unique Pothole Tracks",
+                    len(confirmed_track_ids)
+                )
+
+
+                detection_metric.metric(
+                    "🔍 Total Detections",
+                    total_pothole_detections
+                )
+
+
+                fps_metric.metric(
+                    "⚡ Processing FPS",
+                    f"{current_fps:.1f}"
+                )
+
+
+                # =================================================
                 # PROGRESS
-                # ==================================================
+                # =================================================
 
                 if total_frames > 0:
 
+                    progress = (
+                        frame_number
+                        / total_frames
+                    )
+
                     progress = min(
-
-                        frame_number /
-                        total_frames,
-
+                        progress,
                         1.0
                     )
 
@@ -1134,11 +1013,8 @@ else:
 
 
                 progress_bar.progress(
-
                     progress,
-
                     text=(
-
                         f"Processing "
                         f"{progress * 100:.1f}% | "
                         f"Frame "
@@ -1149,45 +1025,53 @@ else:
 
 
                 status_text.write(
-
-                    f"Processed "
-                    f"{processed_frames} frames | "
-                    f"Current potholes: "
-                    f"{current_potholes} | "
-                    f"Confirmed tracks: "
+                    f"Frame {frame_number}/{total_frames} | "
+                    f"Current detections: "
+                    f"{current_frame_potholes} | "
+                    f"Confirmed unique tracks: "
                     f"{len(confirmed_track_ids)}"
                 )
 
 
-            # ==================================================
-            # FINISH VIDEO
-            # ==================================================
+            # =================================================
+            # RELEASE VIDEO
+            # =================================================
 
             cap.release()
 
             writer.release()
 
 
+            # =================================================
+            # PROCESSING COMPLETE
+            # =================================================
+
             processing_time = (
-                time.time() -
-                processing_start
+                time.time()
+                - processing_start
             )
 
 
             progress_bar.progress(
                 1.0,
-                text="Processing completed!"
+                text="✅ Complete video processed!"
             )
 
 
-            # ==================================================
-            # RESULTS
-            # ==================================================
-
             st.divider()
+
 
             st.success(
                 "✅ Complete video processing finished!"
+            )
+
+
+            # =================================================
+            # FINAL RESULTS
+            # =================================================
+
+            st.subheader(
+                "📊 Video Analysis Results"
             )
 
 
@@ -1197,33 +1081,25 @@ else:
 
 
             result1.metric(
-
-                "🎯 Confirmed Tracks",
-
+                "🎯 Unique Pothole Tracks",
                 len(confirmed_track_ids)
             )
 
 
             result2.metric(
-
-                "🕳️ Total Detections",
-
+                "🔍 Total Detections",
                 total_pothole_detections
             )
 
 
             result3.metric(
-
                 "⏱️ Processing Time",
-
                 f"{processing_time:.1f}s"
             )
 
 
             result4.metric(
-
                 "⚡ Average FPS",
-
                 (
                     f"{processed_frames / processing_time:.1f}"
                     if processing_time > 0
@@ -1232,12 +1108,24 @@ else:
             )
 
 
-            # ==================================================
-            # DISPLAY COMPLETE OUTPUT VIDEO
-            # ==================================================
+            # =================================================
+            # EXPLANATION
+            # =================================================
+
+            st.info(
+                "🎯 Unique Pothole Tracks counts each confirmed "
+                "tracking identity once across the video. "
+                "🔍 Total Detections counts every pothole "
+                "detection across all processed frames."
+            )
+
+
+            # =================================================
+            # SHOW COMPLETE PROCESSED VIDEO
+            # =================================================
 
             st.subheader(
-                "🎬 Processed Video"
+                "🎬 Complete Processed Video"
             )
 
 
@@ -1264,22 +1152,19 @@ else:
                 )
 
 
-                # ==================================================
-                # DOWNLOAD BUTTON
-                # ==================================================
+                # =================================================
+                # DOWNLOAD
+                # =================================================
 
                 st.download_button(
-
                     label=(
-                        "⬇️ Download Processed Video"
+                        "⬇️ Download Complete "
+                        "Processed Video"
                     ),
-
                     data=video_bytes,
-
                     file_name=(
-                        "pothole_detection_output.mp4"
+                        "pothole_detection_complete.mp4"
                     ),
-
                     mime="video/mp4"
                 )
 
@@ -1291,6 +1176,10 @@ else:
                 )
 
 
+        # =====================================================
+        # ERROR HANDLING
+        # =====================================================
+
         except Exception as e:
 
             st.error(
@@ -1300,11 +1189,11 @@ else:
             st.exception(e)
 
 
-        finally:
+        # =====================================================
+        # CLEANUP
+        # =====================================================
 
-            # ----------------------------------------------------
-            # CLEAN INPUT VIDEO
-            # ----------------------------------------------------
+        finally:
 
             if (
                 input_video_path
