@@ -1,4 +1,5 @@
 import glob
+import math
 import os
 import tempfile
 import time
@@ -14,14 +15,13 @@ from ultralytics import YOLO
 # ============================================================
 
 st.set_page_config(
-    page_title="High-Accuracy Pothole Detection & Tracking",
+    page_title="High-Accuracy Pothole Detection & Unique Counting",
     page_icon="🚧",
     layout="wide",
 )
 
-st.title("🚧 Real-Time Video Pothole Detection & Tracking")
+st.title("🚧 Real-Time Unique Pothole Counting & Tracking")
 
-# Initialize Session State for Video Processing Control
 if "stop_processing" not in st.session_state:
     st.session_state.stop_processing = False
 
@@ -40,14 +40,15 @@ else:
 # SIDEBAR SETTINGS
 # ============================================================
 
-st.sidebar.header("⚙️ Model Controls & Settings")
+st.sidebar.header("⚙️ Model & Anti-Duplicate Controls")
 
 confidence_threshold = st.sidebar.slider(
     "Detection Confidence Threshold",
     min_value=0.05,
     max_value=1.00,
-    value=0.25,
+    value=0.30,
     step=0.05,
+    help="Higher values prevent weak false positives from being created.",
 )
 
 iou_threshold = st.sidebar.slider(
@@ -58,17 +59,19 @@ iou_threshold = st.sidebar.slider(
     step=0.05,
 )
 
+min_distance_px = st.sidebar.slider(
+    "Anti-Duplicate Distance Threshold (Pixels)",
+    min_value=10,
+    max_value=150,
+    value=60,
+    step=5,
+    help="If a new detection appears within this pixel radius of an already counted pothole, it will NOT be counted twice.",
+)
+
 tracker_type = st.sidebar.selectbox(
     "Tracking Algorithm",
     options=["bytetrack.yaml", "botsort.yaml"],
     index=0,
-    help="ByteTrack utilizes LAP matching efficiently. BoT-SORT adds camera motion compensation.",
-)
-
-enable_tta = st.sidebar.checkbox(
-    "Enable TTA for Images",
-    value=False,
-    help="Test-Time Augmentation improves image accuracy but slows down inference.",
 )
 
 # ============================================================
@@ -81,72 +84,61 @@ frame_skip = st.sidebar.selectbox(
     "Process Every Nth Frame",
     options=[1, 2, 3, 4],
     index=1,
-    help="1 = process all frames, 2 = skip every other frame (faster).",
 )
 
 video_imgsz = st.sidebar.selectbox(
     "Video Inference Size",
     options=[320, 416, 512, 640],
-    index=2,
-    help="Smaller resolution leads to faster processing, especially on CPU.",
+    index=1,
 )
 
 max_video_width = st.sidebar.selectbox(
     "Maximum Display Width",
     options=[640, 800, 960, 1280],
-    index=2,
-    help="Resizes raw frame before inference to optimize memory and speed.",
+    index=1,
 )
 
 # ============================================================
-# HARDWARE INFORMATION
-# ============================================================
-
-st.sidebar.header("💻 Hardware Status")
-if torch.cuda.is_available():
-    st.sidebar.success(f"🚀 {DEVICE_NAME}")
-else:
-    st.sidebar.info("💻 CUDA GPU not detected. Running on CPU.")
-
-# ============================================================
-# MODEL LOADING FUNCTION
+# LOAD MODEL
 # ============================================================
 
 
 @st.cache_resource
 def load_pothole_model():
-    # 1. Custom model in app directory
     if os.path.exists("best.pt"):
         return YOLO("best.pt")
 
-    # 2. Search recursively in runs directory
     found_weights = glob.glob("runs/**/best.pt", recursive=True)
     if found_weights:
         return YOLO(found_weights[0])
 
-    # 3. Fallback pretrained YOLO model
     if os.path.exists("yolov8n.pt"):
-        st.sidebar.warning(
-            "⚠️ Using base YOLOv8n model. For accurate pothole detection, provide trained `best.pt` weights."
-        )
         return YOLO("yolov8n.pt")
 
-    raise FileNotFoundError(
-        "No model weights found. Please place `best.pt` in the application root."
-    )
+    raise FileNotFoundError("No model weights found.")
 
-
-# ============================================================
-# INITIALIZE MODEL
-# ============================================================
 
 try:
     model = load_pothole_model()
     st.sidebar.success("✅ Model Loaded Successfully!")
-    st.sidebar.write("**Model Classes:**", model.names)
 except Exception as e:
     st.error(f"❌ Failed to load model weights: {e}")
     st.stop()
+
+# ============================================================
+# HELPER: EUCLIDEAN DISTANCE FOR ANTI-DUPLICATION
+# ============================================================
+
+
+def is_duplicate_pothole(new_center, logged_centers, min_dist):
+    """Checks if new_center (x, y) is too close to any previously recorded pothole center."""
+    nx, ny = new_center
+    for cx, cy in logged_centers:
+        distance = math.hypot(nx - cx, ny - cy)
+        if distance < min_dist:
+            return True
+    return False
+
 
 # ============================================================
 # INPUT MODE SELECTION
@@ -154,13 +146,8 @@ except Exception as e:
 
 mode = st.radio("Select Input Source:", ("Image", "Video"), horizontal=True)
 
-# ============================================================
-# IMAGE DETECTION MODE
-# ============================================================
-
 if mode == "Image":
     st.header("🖼️ Image Pothole Detection")
-
     uploaded_file = st.file_uploader(
         "Upload Road Image", type=["jpg", "jpeg", "png"]
     )
@@ -181,7 +168,6 @@ if mode == "Image":
                     conf=confidence_threshold,
                     iou=iou_threshold,
                     imgsz=640,
-                    augment=enable_tta,
                     device=DEVICE,
                     verbose=False,
                 )
@@ -201,12 +187,8 @@ if mode == "Image":
             )
             st.metric("🕳️ Total Potholes Detected", num_detected)
 
-# ============================================================
-# VIDEO DETECTION & TRACKING MODE
-# ============================================================
-
 elif mode == "Video":
-    st.header("🎥 Video Pothole Detection & Tracking")
+    st.header("🎥 Video Pothole Detection & Unique Counting")
 
     uploaded_video = st.file_uploader(
         "Upload Road Video", type=["mp4", "avi", "mov", "mkv"]
@@ -214,10 +196,8 @@ elif mode == "Video":
 
     if uploaded_video is not None:
         temp_input_path = None
-        temp_output_path = None
 
         try:
-            # Save uploaded video to temporary file
             with tempfile.NamedTemporaryFile(
                 delete=False, suffix=".mp4"
             ) as tfile:
@@ -229,7 +209,6 @@ elif mode == "Video":
                 st.error("❌ Error opening video file.")
                 st.stop()
 
-            # Video properties
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             original_fps = cap.get(cv2.CAP_PROP_FPS)
             if original_fps <= 0 or np.isnan(original_fps):
@@ -241,7 +220,6 @@ elif mode == "Video":
                 total_frames / original_fps if total_frames > 0 else 0
             )
 
-            # Display Metadata
             info1, info2, info3, info4 = st.columns(4)
             info1.metric("Duration", f"{video_duration:.1f}s")
             info2.metric("FPS", f"{original_fps:.1f}")
@@ -250,21 +228,7 @@ elif mode == "Video":
 
             st.divider()
 
-            # Output Video setup
-            output_temp = tempfile.NamedTemporaryFile(
-                delete=False, suffix=".mp4"
-            )
-            temp_output_path = output_temp.name
-            output_temp.close()
-
-            # Setup video writer
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            out_writer = None
-
-            # Streamlit UI placeholders
-            st.subheader("🚀 Processing Video")
-            st.caption(f"Running inference engine on **{DEVICE_NAME}**")
-
+            st.subheader("🚀 Real-Time Unique Counting Stream")
             st_frame = st.empty()
             progress_bar = st.progress(0, text="Initializing tracker...")
 
@@ -273,124 +237,148 @@ elif mode == "Video":
             total_metric = mcol2.empty()
             speed_metric = mcol3.empty()
 
-            # Stop Processing Control Button
             if st.button("⛔ Stop Processing"):
                 st.session_state.stop_processing = True
 
-            unique_pothole_ids = set()
+            # Anti-duplicate tracking memory
+            verified_unique_ids = set()
+            counted_centroids = (
+                []
+            )  # Stores (x_center, y_center) of counted potholes
+
             frame_number = 0
             processed_frames = 0
             processing_start = time.time()
             st.session_state.stop_processing = False
 
-            # Processing Loop
-            while cap.isOpened() and not st.session_state.stop_processing:
-                ret, frame = cap.read()
-                if not ret:
-                    break
+            model.predictor = None  # Reset tracking state
 
-                frame_number += 1
+            with torch.inference_mode():
+                while cap.isOpened() and not st.session_state.stop_processing:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
 
-                # Frame Skipping Logic
-                if frame_number % frame_skip != 0:
-                    continue
+                    frame_number += 1
 
-                processed_frames += 1
+                    if frame_number % frame_skip != 0:
+                        continue
 
-                # Resize Frame if width exceeds limits
-                h, w = frame.shape[:2]
-                if w > max_video_width:
-                    scale = max_video_width / w
-                    new_w, new_h = int(w * scale), int(h * scale)
-                    frame = cv2.resize(
-                        frame, (new_w, new_h), interpolation=cv2.INTER_AREA
+                    processed_frames += 1
+
+                    # Resize frame
+                    h, w = frame.shape[:2]
+                    if w > max_video_width:
+                        scale = max_video_width / w
+                        frame = cv2.resize(
+                            frame,
+                            (int(w * scale), int(h * scale)),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
+
+                    # Model tracking call
+                    results = model.track(
+                        source=frame,
+                        conf=confidence_threshold,
+                        iou=iou_threshold,
+                        imgsz=video_imgsz,
+                        persist=True,
+                        tracker=tracker_type,
+                        device=DEVICE,
+                        verbose=False,
                     )
 
-                # Initialize VideoWriter on first valid frame processing
-                if out_writer is None:
-                    out_h, out_w = frame.shape[:2]
-                    out_writer = cv2.VideoWriter(
-                        temp_output_path,
-                        fourcc,
-                        original_fps / frame_skip,
-                        (out_w, out_h),
+                    result = results[0]
+                    frame_potholes = 0
+
+                    if (
+                        result.boxes is not None
+                        and result.boxes.id is not None
+                    ):
+                        boxes_xyxy = result.boxes.xyxy.cpu().numpy()
+                        track_ids = result.boxes.id.int().cpu().tolist()
+                        frame_potholes = len(track_ids)
+
+                        for box, t_id in zip(boxes_xyxy, track_ids):
+                            # Calculate center coordinate of detection box
+                            x1, y1, x2, y2 = box
+                            cx = int((x1 + x2) / 2)
+                            cy = int((y1 + y2) / 2)
+                            center_point = (cx, cy)
+
+                            # If ID is new, check spatial distance against previously counted centroids
+                            if t_id not in verified_unique_ids:
+                                if not is_duplicate_pothole(
+                                    center_point,
+                                    counted_centroids,
+                                    min_distance_px,
+                                ):
+                                    verified_unique_ids.add(t_id)
+                                    counted_centroids.append(center_point)
+
+                    elif result.boxes is not None:
+                        frame_potholes = len(result.boxes)
+
+                    # Plot bounding boxes
+                    annotated_frame = result.plot()
+
+                    # Display total unique count directly on top of frame video feed
+                    cv2.putText(
+                        annotated_frame,
+                        f"UNIQUE POTHOLES: {len(verified_unique_ids)}",
+                        (20, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1.0,
+                        (0, 255, 0),
+                        3,
+                        cv2.LINE_AA,
                     )
 
-                # Run Object Tracking with LAP matching
-                results = model.track(
-                    source=frame,
-                    conf=confidence_threshold,
-                    iou=iou_threshold,
-                    imgsz=video_imgsz,
-                    persist=True,
-                    tracker=tracker_type,
-                    device=DEVICE,
-                    verbose=False,
-                )
+                    rgb_frame = cv2.cvtColor(
+                        annotated_frame, cv2.COLOR_BGR2RGB
+                    )
+                    st_frame.image(rgb_frame, use_container_width=True)
 
-                result = results[0]
-                frame_potholes = 0
+                    # Update Streamlit live metrics
+                    if (
+                        processed_frames % 3 == 0
+                        or frame_number == total_frames
+                    ):
+                        elapsed = time.time() - processing_start
+                        fps = (
+                            (processed_frames / elapsed) if elapsed > 0 else 0
+                        )
 
-                # ID extraction
-                if (
-                    result.boxes is not None
-                    and result.boxes.id is not None
-                ):
-                    track_ids = result.boxes.id.int().cpu().tolist()
-                    for t_id in track_ids:
-                        unique_pothole_ids.add(t_id)
-                    frame_potholes = len(track_ids)
-                elif result.boxes is not None:
-                    frame_potholes = len(result.boxes)
+                        current_metric.metric(
+                            "In Frame Right Now", frame_potholes
+                        )
+                        total_metric.metric(
+                            "🎯 Verified Unique Potholes",
+                            len(verified_unique_ids),
+                        )
+                        speed_metric.metric("FPS", f"{fps:.1f}")
 
-                # Annotate Frame
-                annotated_frame = result.plot()
-                out_writer.write(annotated_frame)
+                        if total_frames > 0:
+                            progress = min(frame_number / total_frames, 1.0)
+                            progress_bar.progress(
+                                progress,
+                                text=f"Processing {progress * 100:.1f}%",
+                            )
 
-                # Display to Streamlit (Convert BGR to RGB)
-                rgb_frame = cv2.cvtColor(
-                    annotated_frame, cv2.COLOR_BGR2RGB
-                )
-                st_frame.image(rgb_frame, use_container_width=True)
-
-                # Update live metrics
-                elapsed = time.time() - processing_start
-                processing_fps = (
-                    (processed_frames / elapsed) if elapsed > 0 else 0
-                )
-
-                current_metric.metric("Potholes (Current)", frame_potholes)
-                total_metric.metric(
-                    "Unique Tracked", len(unique_pothole_ids)
-                )
-                speed_metric.metric(
-                    "Processing FPS", f"{processing_fps:.1f}"
-                )
-
-                # Update Progress Bar
-                progress = min(frame_number / total_frames, 1.0)
-                progress_bar.progress(
-                    progress,
-                    text=f"Processed: {frame_number}/{total_frames} frames ({progress * 100:.1f}%)",
-                )
-
-            # Clean Video Operations
             cap.release()
-            if out_writer is not None:
-                out_writer.release()
-
             total_processing_time = time.time() - processing_start
             st.divider()
 
             if st.session_state.stop_processing:
-                st.warning("⛔ Video processing stopped by user.")
+                st.warning("⛔ Processing stopped.")
             else:
                 st.success("✅ Video processing completed!")
 
-            # Final Metrics
             res1, res2, res3 = st.columns(3)
-            res1.metric("Unique Potholes Found", len(unique_pothole_ids))
-            res2.metric("Elapsed Time", f"{total_processing_time:.1f}s")
+            res1.metric(
+                "Final Verified Unique Potholes", len(verified_unique_ids)
+            )
+            res2.metric("Processing Time", f"{total_processing_time:.1f}s")
             avg_fps = (
                 (processed_frames / total_processing_time)
                 if total_processing_time > 0
@@ -398,27 +386,15 @@ elif mode == "Video":
             )
             res3.metric("Average Speed", f"{avg_fps:.1f} FPS")
 
-            # Option to download processed output video
-            if os.path.exists(temp_output_path):
-                with open(temp_output_path, "rb") as video_file:
-                    st.download_button(
-                        label="📥 Download Annotated Video",
-                        data=video_file,
-                        file_name="pothole_tracked_output.mp4",
-                        mime="video/mp4",
-                    )
-
         except Exception as e:
-            st.error(f"❌ Error during video processing: {e}")
+            st.error(f"❌ Error during processing: {e}")
 
         finally:
-            # Temporary file cleanup
-            for p in [temp_input_path, temp_output_path]:
-                if p and os.path.exists(p):
-                    try:
-                        os.remove(p)
-                    except Exception:
-                        pass
+            if temp_input_path and os.path.exists(temp_input_path):
+                try:
+                    os.remove(temp_input_path)
+                except Exception:
+                    pass
 
 
 
